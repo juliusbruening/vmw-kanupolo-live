@@ -1,8 +1,6 @@
-// Orchestrator: holt alle Quellseiten, parst sie, liefert ein Snapshot-Objekt.
-//   - Spielplan/Ergebnisse je Spieltag (4×)
-//   - Tabelle (1×)
-//   - Kader VMW Berlin (1×)
-// Total ~6 HTTP-Requests pro Lauf.
+// Orchestrator: holt alle Quellseiten PARALLEL, parst sie, liefert ein Snapshot.
+// Wichtig: Alle 6 HTTP-Requests laufen gleichzeitig, damit selbst bei 25s
+// pro Request das 30s-Limit der Netlify Scheduled Function eingehalten wird.
 
 import { fetchHtml } from './fetch.mjs';
 import { parseSpielplan } from './parseSpielplan.mjs';
@@ -10,22 +8,22 @@ import { parseTabelle } from './parseTabelle.mjs';
 import { parseKader } from './parseKader.mjs';
 
 const BASE = 'https://bundesliga.kanupolo.de';
-const PROJECT_ID = '115';                   // Saison 2026 1. BL Herren
-const ROUND_IDS = [295, 296, 297, 298];     // Spieltage 1-4
+const PROJECT_ID = '115';
+const SEASON_SLUG = '115-herren-1-liga-regulaere-saison-2026';
 const SEASON_PATH = '1-bundesliga-herren';
-const TABELLE_URL = `${BASE}/index.php/${SEASON_PATH}/tabelle`;
+const ROUND_IDS = [295, 296, 297, 298];
+const VMW_TEAM_ID = '56';
+const VMW_TEAM_SLUG = 'vereinigung-maerkischer-wanderpaddler-berlin';
 const VMW_TEAM_NAME = 'Vereinigung Märkischer Wanderpaddler Berlin';
 const VMW_NAME_FRAGMENT = 'Märkischer Wanderpaddler';
 
-function spielplanUrl(roundId) {
-  return `${BASE}/index.php/${SEASON_PATH}/spielplan/results/${PROJECT_ID}/${roundId}/0/0/0/0`;
-}
+const TABELLE_URL = `${BASE}/index.php/${SEASON_PATH}/tabelle`;
+const VMW_KADER_URL = `${BASE}/index.php/${SEASON_PATH}/tabelle/roster/${SEASON_SLUG}/${VMW_TEAM_ID}-${VMW_TEAM_SLUG}/0`;
+const SPIELPLAN_URLS = ROUND_IDS.map((rid) => ({
+  rid,
+  url: `${BASE}/index.php/${SEASON_PATH}/spielplan/results/${PROJECT_ID}/${rid}/0/0/0/0`,
+}));
 
-function rosterUrl(seasonSlug, teamId, teamSlug) {
-  return `${BASE}/index.php/${SEASON_PATH}/tabelle/roster/${seasonSlug}/${teamId}-${teamSlug}/0`;
-}
-
-// Bilder/Logos in der Quelle sind relativ. Wir mappen sie auf absolute URLs.
 function absolutize(url) {
   if (!url) return null;
   if (url.startsWith('http')) return url;
@@ -60,16 +58,30 @@ export async function buildSnapshot({ logger = console } = {}) {
     }
   };
 
-  // 1) Spielpläne (parallel, eine Anfrage pro Spieltag)
-  const spielplaeneRaw = await Promise.all(
-    ROUND_IDS.map((rid, i) => safe(`spielplan ST${i + 1}`, async () => {
-      const html = await fetchHtml(spielplanUrl(rid));
-      return fixupSpielplanLogos(parseSpielplan(html));
-    }))
-  );
-  const spielplaene = spielplaeneRaw.filter(Boolean);
+  // ALLE Requests parallel — das ist der Schlüssel für die 30s-Grenze
+  const tasks = [
+    ...SPIELPLAN_URLS.map(({ rid, url }, i) =>
+      safe(`spielplan ST${i + 1}`, async () => {
+        const html = await fetchHtml(url);
+        return fixupSpielplanLogos(parseSpielplan(html));
+      })
+    ),
+    safe('tabelle', async () => {
+      const html = await fetchHtml(TABELLE_URL);
+      return fixupTabelleLogos(parseTabelle(html));
+    }),
+    safe('kader VMW', async () => {
+      const html = await fetchHtml(VMW_KADER_URL);
+      return parseKader(html);
+    }),
+  ];
 
-  // 2) Team-Liste vereinen (aus allen Spieltagen)
+  const results = await Promise.all(tasks);
+  const spielplaene = results.slice(0, 4).filter(Boolean);
+  const tabelle = results[4];
+  const kaderVmw = results[5];
+
+  // Team-Liste aus Spielplänen ableiten
   const teamMap = new Map();
   for (const sp of spielplaene) {
     for (const t of (sp.teams || [])) {
@@ -78,26 +90,11 @@ export async function buildSnapshot({ logger = console } = {}) {
   }
   const teams = Array.from(teamMap.values());
 
-  // 3) Tabelle
-  const tabelle = await safe('tabelle', async () => {
-    const html = await fetchHtml(TABELLE_URL);
-    return fixupTabelleLogos(parseTabelle(html));
-  });
-
-  // 4) Nur VMW-Kader scrapen — Frontend zeigt aktuell ausschließlich VMW.
-  // Wenn du später Gegner-Kader/Statistiken willst, hier die Liste erweitern.
+  // Kader-Map
   const kader = {};
-  const vmwTeam = teams.find((t) => t.name?.includes(VMW_NAME_FRAGMENT));
-  if (vmwTeam) {
-    await safe(`kader VMW (${vmwTeam.id})`, async () => {
-      const html = await fetchHtml(rosterUrl(vmwTeam.seasonSlug, vmwTeam.id, vmwTeam.slug));
-      kader[vmwTeam.id] = parseKader(html);
-    });
-  } else {
-    errors.push({ step: 'kader VMW', message: 'VMW-Team nicht in Spielplan-Daten gefunden' });
-  }
+  if (kaderVmw) kader[VMW_TEAM_ID] = kaderVmw;
 
-  // 5) VMW-Spotlight: alle Matches mit VMW im Team-Namen extrahieren
+  // VMW-Spotlight
   const vmwMatches = [];
   for (const sp of spielplaene) {
     for (const sec of sp.sections) {
