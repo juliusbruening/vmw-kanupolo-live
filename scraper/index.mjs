@@ -1,8 +1,8 @@
 // Orchestrator: holt alle Quellseiten, parst sie, liefert ein Snapshot-Objekt.
 //   - Spielplan/Ergebnisse je Spieltag (4×)
 //   - Tabelle (1×)
-//   - Kader je Team (12×)
-// Total ~17 HTTP-Requests pro Lauf — bei 15-min-Intervall ~68/h, vertretbar.
+//   - Kader VMW Berlin (1×)
+// Total ~6 HTTP-Requests pro Lauf.
 
 import { fetchHtml } from './fetch.mjs';
 import { parseSpielplan } from './parseSpielplan.mjs';
@@ -15,6 +15,7 @@ const ROUND_IDS = [295, 296, 297, 298];     // Spieltage 1-4
 const SEASON_PATH = '1-bundesliga-herren';
 const TABELLE_URL = `${BASE}/index.php/${SEASON_PATH}/tabelle`;
 const VMW_TEAM_NAME = 'Vereinigung Märkischer Wanderpaddler Berlin';
+const VMW_NAME_FRAGMENT = 'Märkischer Wanderpaddler';
 
 function spielplanUrl(roundId) {
   return `${BASE}/index.php/${SEASON_PATH}/spielplan/results/${PROJECT_ID}/${roundId}/0/0/0/0`;
@@ -29,7 +30,6 @@ function absolutize(url) {
   if (!url) return null;
   if (url.startsWith('http')) return url;
   if (url.startsWith('/')) return BASE + url;
-  // "./Ergebnisse_..._files/krm.jpg" oder "templates/.../images/foo.png"
   return BASE + '/' + url.replace(/^\.?\//, '');
 }
 
@@ -84,26 +84,32 @@ export async function buildSnapshot({ logger = console } = {}) {
     return fixupTabelleLogos(parseTabelle(html));
   });
 
-  // 4) Kader für jedes Team (parallel, kleine Concurrency-Begrenzung)
+  // 4) Nur VMW-Kader scrapen — Frontend zeigt aktuell ausschließlich VMW.
+  // Wenn du später Gegner-Kader/Statistiken willst, hier die Liste erweitern.
   const kader = {};
-  await Promise.all(teams.map((t) => safe(`kader ${t.id}`, async () => {
-    const html = await fetchHtml(rosterUrl(t.seasonSlug, t.id, t.slug));
-    kader[t.id] = parseKader(html);
-  })));
+  const vmwTeam = teams.find((t) => t.name?.includes(VMW_NAME_FRAGMENT));
+  if (vmwTeam) {
+    await safe(`kader VMW (${vmwTeam.id})`, async () => {
+      const html = await fetchHtml(rosterUrl(vmwTeam.seasonSlug, vmwTeam.id, vmwTeam.slug));
+      kader[vmwTeam.id] = parseKader(html);
+    });
+  } else {
+    errors.push({ step: 'kader VMW', message: 'VMW-Team nicht in Spielplan-Daten gefunden' });
+  }
 
   // 5) VMW-Spotlight: alle Matches mit VMW im Team-Namen extrahieren
   const vmwMatches = [];
   for (const sp of spielplaene) {
     for (const sec of sp.sections) {
       for (const m of sec.matches) {
-        if (m.home.name?.includes('Märkischer Wanderpaddler') ||
-            m.away.name?.includes('Märkischer Wanderpaddler')) {
+        if (m.home.name?.includes(VMW_NAME_FRAGMENT) ||
+            m.away.name?.includes(VMW_NAME_FRAGMENT)) {
           vmwMatches.push({
             spieltag: sp.spieltag,
             spieltagNr: sp.spieltagNr,
             sectionHeader: sec.header,
             ...m,
-            isHome: m.home.name?.includes('Märkischer Wanderpaddler'),
+            isHome: m.home.name?.includes(VMW_NAME_FRAGMENT),
           });
         }
       }
