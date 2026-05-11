@@ -1,5 +1,7 @@
-// Netlify Scheduled Function — läuft alle 15 Min via config.schedule.
+// Netlify Scheduled Function — läuft alle 15 Min an Wochenenden.
 // Holt einen Snapshot, schreibt ihn in den Netlify-Blob "data".
+// Wir scrapen nur Sa+So, weil Bundesliga-Spieltage immer am Wochenende stattfinden.
+// Spart ~70% Cron-Läufe und schont die Quelle.
 
 import { getStore } from '@netlify/blobs';
 import { buildSnapshot } from '../../scraper/index.mjs';
@@ -21,7 +23,8 @@ export default async () => {
   return new Response('ok', { status: 200 });
 };
 
-// Cron alle 15 Minuten (UTC), Netlify v2 Function-Format
+// Cron alle 15 Minuten — nur Samstag (6) und Sonntag (0), UTC.
+// Cron-Syntax: minute hour day-of-month month day-of-week
 export const config = {
-  schedule: '*/15 * * * *',
+  schedule: '*/15 * * * 6,0',
 };

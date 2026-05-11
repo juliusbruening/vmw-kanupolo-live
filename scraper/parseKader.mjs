@@ -1,7 +1,8 @@
 // Parser für JoomLeague Kader-Seite (pro Team).
-// Cells (gemäß Recon, 13 td):
-//   [3]=Name, [5]=Alter (in Klammern), [6]=Gespielt, [7]=Gelb, [8]=Grün,
-//   [9]=Rot, [10]=Rot-Ausschluss, [11]=Tore, [12]=Tore-Schnitt
+// Cells (gemäß JoomLeague-Standard, 13 td-Zellen):
+//   [3]=Name, [5]=Alter (in Klammern),
+//   [6]=Spiele, [7]=Tore, [8]=Grüne Karten, [9]=Gelbe Karten,
+//   [10]=Rote Karten, [11]=Rote Karten (Ausschluss), [12]=Tore-Schnitt
 // Liefert: { team, players: [...] }
 
 import * as cheerio from 'cheerio';
@@ -9,19 +10,16 @@ import * as cheerio from 'cheerio';
 export function parseKader(html) {
   const $ = cheerio.load(html);
 
-  // "Kader: Vereinigung Märkischer Wanderpaddler Berlin [VMW] | Saison 2026 1. Bundesliga..."
-  // → "Vereinigung Märkischer Wanderpaddler Berlin"
   const rawHead = $('.contentheading').first().text().trim();
   const team = rawHead
     .replace(/^Kader:\s*/, '')
-    .replace(/\s*\[[^\]]+\].*$/, '')   // entfernt "[VMW] | Saison 2026 ..."
-    .replace(/\s*\|.*$/, '')           // falls kein [..]: entfernt "| Saison ..."
+    .replace(/\s*\[[^\]]+\].*$/, '')
+    .replace(/\s*\|.*$/, '')
     .trim();
 
   const players = [];
   $('tr.sectiontableentry1, tr.sectiontableentry2').each((_, tr) => {
     const $tr = $(tr);
-    // Summenzeile ("insgesamt") überspringen — keine .playername darin.
     const $name = $tr.find('.playername');
     if (!$name.length) return;
     const name = $name.text().trim();
@@ -33,11 +31,11 @@ export function parseKader(html) {
     const age = numOrNull(ageRaw);
 
     const games = numOrNull(cellText(6));
-    const yellow = numOrNull(cellText(7));
+    const goals = numOrNull(cellText(7));
     const green = numOrNull(cellText(8));
-    const red = numOrNull(cellText(9));
-    const redExcl = numOrNull(cellText(10));
-    const goals = numOrNull(cellText(11));
+    const yellow = numOrNull(cellText(9));
+    const red = numOrNull(cellText(10));
+    const redExcl = numOrNull(cellText(11));
     const goalsAvgRaw = cellText(12).replace(',', '.');
     const goalsAvg = isFinite(parseFloat(goalsAvgRaw)) ? parseFloat(goalsAvgRaw) : null;
 
@@ -45,9 +43,9 @@ export function parseKader(html) {
       name,
       age,
       games,
-      cards: { yellow, green, red, redExclusion: redExcl },
       goals,
       goalsAvg,
+      cards: { green, yellow, red, redExclusion: redExcl },
     });
   });
 

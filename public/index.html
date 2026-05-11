@@ -28,7 +28,6 @@
 
 <main>
 
-<!-- VMW Spotlight -->
 <section class="card" id="vmwCard">
   <h2 class="card-title">VMW Berlin</h2>
   <div id="vmwSpotlight" class="vmw-spotlight">
@@ -36,7 +35,6 @@
   </div>
 </section>
 
-<!-- Tabelle -->
 <section class="card" id="tabelleCard">
   <h2 class="card-title">Tabelle</h2>
   <div class="table-wrap">
@@ -58,7 +56,6 @@
   </div>
 </section>
 
-<!-- Spielplan -->
 <section class="card" id="spielplanCard">
   <h2 class="card-title">Spielplan & Ergebnisse</h2>
   <div class="controls">
@@ -71,7 +68,6 @@
   <div id="spielplanBody"></div>
 </section>
 
-<!-- Kader VMW -->
 <section class="card" id="kaderCard">
   <h2 class="card-title">Kader VMW</h2>
   <div class="table-wrap">
@@ -83,8 +79,9 @@
           <th class="num">Sp</th>
           <th class="num">Tore</th>
           <th class="num">∅</th>
-          <th class="num">G</th>
-          <th class="num">R</th>
+          <th class="num card-h card-gr" title="Grüne Karten">Gr</th>
+          <th class="num card-h card-ge" title="Gelbe Karten">Ge</th>
+          <th class="num card-h card-ro" title="Rote Karten (inkl. Ausschluss)">Ro</th>
         </tr>
       </thead>
       <tbody></tbody>
@@ -95,8 +92,9 @@
 </main>
 
 <footer>
-  <p>Daten von <a href="https://bundesliga.kanupolo.de/" rel="noopener" target="_blank">bundesliga.kanupolo.de</a> · Aktualisierung ca. alle 15 Minuten</p>
+  <p>Daten von <a href="https://bundesliga.kanupolo.de/" rel="noopener" target="_blank">bundesliga.kanupolo.de</a> · Aktualisierung am Wochenende alle 15 Min</p>
   <p class="disclaimer">Inoffizielles Mirror — kein Ersatz für die offizielle Liga-Seite. Erstellt für Familie, Freunde und den VMW Berlin.</p>
+  <p class="byline">Gebaut von Julius Brüning · <a href="#" id="contactLink" rel="nofollow">Idee für deinen Verein? Schreib mir.</a></p>
 </footer>
 
 <script src="./app.js"></script>
