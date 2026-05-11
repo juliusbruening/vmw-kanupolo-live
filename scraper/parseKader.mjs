@@ -1,16 +1,9 @@
 // Parser für JoomLeague Kader-Seite (pro Team).
-// Cells (verifiziert anhand der Live-Daten nach ST1 2026):
-//   [0-5]= Spielerbereich (Trikotnummer, Foto, Land, Name, leer, Alter)
-//   [6]= Spiele
-//   [7]= unbekannt (in den Daten immer 0, vermutlich Einsatzminuten) — ignoriert
-//   [8]= Grüne Karten
-//   [9]= Tore
-//   [10]= Gelbe Karten (vermutet, in den Daten noch 0)
-//   [11]= Rote Karten (inkl. Ausschluss; vermutet, in den Daten noch 0)
-//   [12]= Tore-Schnitt
-//
-// Falls bei späteren Spieltagen Gelb/Rot vertauscht aussehen,
-// einfach Indices [10] und [11] in dieser Datei tauschen.
+// Spalten-Reihenfolge (verifiziert anhand des Live-HTML-Headers nach ST1 2026):
+//   Spieler (5 td breit) | Alter | Spiele | Tore | Grüne Karte | Gelbe Karte | Rote Karte | Rote Karte (Ausschluss) | Tore-∅
+// Daraus folgt für die td-Indices in der Datenzeile:
+//   [3]=Name, [5]=Alter (in Klammern)
+//   [6]=Spiele, [7]=Tore, [8]=Grüne, [9]=Gelbe, [10]=Rote, [11]=Rote-Ausschluss, [12]=Tore-∅
 
 import * as cheerio from 'cheerio';
 
@@ -38,10 +31,11 @@ export function parseKader(html) {
     const age = numOrNull(ageRaw);
 
     const games = numOrNull(cellText(6));
+    const goals = numOrNull(cellText(7));
     const green = numOrNull(cellText(8));
-    const goals = numOrNull(cellText(9));
-    const yellow = numOrNull(cellText(10));
-    const red = numOrNull(cellText(11));
+    const yellow = numOrNull(cellText(9));
+    const red = numOrNull(cellText(10));
+    const redExcl = numOrNull(cellText(11));
     const goalsAvgRaw = cellText(12).replace(',', '.');
     const goalsAvg = isFinite(parseFloat(goalsAvgRaw)) ? parseFloat(goalsAvgRaw) : null;
 
@@ -51,7 +45,7 @@ export function parseKader(html) {
       games,
       goals,
       goalsAvg,
-      cards: { green, yellow, red, redExclusion: 0 },
+      cards: { green, yellow, red, redExclusion: redExcl },
     });
   });
 
