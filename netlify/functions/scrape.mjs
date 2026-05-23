@@ -1,100 +1,69 @@
-// Netlify Scheduled Function — Cron feuert alle 15 Min, scrapen findet
-// aber nur statt:
-//   1) An Spieltagen (laut Liste), 8-20 Uhr Berlin-Zeit
-//   2) In der Woche vor einem Spieltag: Mo-Fr um ca. 16 Uhr Berlin-Zeit
-// Sonst Quick-Exit (~50ms, vernachlässigbarer Credit-Verbrauch).
+// netlify/functions/scrape.mjs
+// Scheduled Function. Schedule:
+//   - Wir lassen den Cron alle 15 Min zwischen 04:00 und 21:00 UTC laufen
+//     (= 06:00–23:00 Berlin-Zeit in CEST, Mai 2026).
+//   - Außerhalb der Turniertage (Sa 23. / So 24. / Mo 25. Mai 2026) skippen wir
+//     im Code alle Aufrufe, die nicht der erste Run des Tages (UTC-Stunde 4) sind.
 //
-// Bei Saisonwechsel: SPIELTAGE-Liste unten aktualisieren.
+// Empty invocations are essentially free; nur echte Scrapes verbrauchen Bandbreite.
 
 import { getStore } from '@netlify/blobs';
 import { buildSnapshot } from '../../scraper/index.mjs';
 
-const SPIELTAGE = [
-  { start: '2026-05-09', end: '2026-05-10', label: 'ST1' },
-  { start: '2026-06-06', end: '2026-06-07', label: 'ST2' },
-  { start: '2026-06-27', end: '2026-06-28', label: 'ST3' },
-  { start: '2026-07-18', end: '2026-07-19', label: 'ST4' },
-  { start: '2026-08-13', end: '2026-08-16', label: 'DM' },
-];
-
-const WEEKDAYS_MO_FR = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
-const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-// Liefert das aktuelle Datum/Uhrzeit in Berlin-Zeit als strukturiertes Objekt.
-// Wichtig: Netlify-Crons laufen in UTC, wir müssen lokal interpretieren,
-// damit Sommer-/Winterzeit-Wechsel automatisch korrekt sind.
-function berlinNow(now = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Berlin',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit',
-    weekday: 'short',
-    hour12: false,
-  }).formatToParts(now).reduce((acc, p) => {
-    if (p.type !== 'literal') acc[p.type] = p.value;
-    return acc;
-  }, {});
-  return {
-    date: `${parts.year}-${parts.month}-${parts.day}`,
-    hour: parseInt(parts.hour, 10),
-    minute: parseInt(parts.minute, 10),
-    weekday: parts.weekday,
-  };
-}
-
-export function shouldScrapeNow(now = new Date()) {
-  const t = berlinNow(now);
-
-  // Case 1: Heute ist Spieltag, Uhrzeit 8-20
-  for (const st of SPIELTAGE) {
-    if (t.date >= st.start && t.date <= st.end && t.hour >= 8 && t.hour < 20) {
-      return { yes: true, reason: `Spieltag ${st.label} live (${t.date} ${t.hour}:${String(t.minute).padStart(2, '0')})` };
-    }
-  }
-
-  // Case 2: Mo-Fr ca. 16 Uhr (Cron feuert zur vollen Viertelstunde →
-  // Minute < 15 fängt den :00-Tick), und nächster Samstag ist Spieltag
-  if (WEEKDAYS_MO_FR.includes(t.weekday) && t.hour === 16 && t.minute < 15) {
-    const dayIdx = DAY_NAMES.indexOf(t.weekday);
-    const daysUntilSat = ((6 - dayIdx) + 7) % 7 || 7;
-    const baseDate = new Date(`${t.date}T00:00:00Z`);
-    baseDate.setUTCDate(baseDate.getUTCDate() + daysUntilSat);
-    const nextSatStr = baseDate.toISOString().slice(0, 10);
-
-    for (const st of SPIELTAGE) {
-      if (nextSatStr >= st.start && nextSatStr <= st.end) {
-        return { yes: true, reason: `Pre-${st.label}-Check (nächstes Sa: ${nextSatStr})` };
-      }
-    }
-  }
-
-  return { yes: false, reason: `${t.date} ${t.weekday} ${t.hour}:${String(t.minute).padStart(2, '0')} — keine relevante Zeit` };
-}
-
-export default async () => {
-  const decision = shouldScrapeNow();
-  if (!decision.yes) {
-    console.log(`[scrape] skip — ${decision.reason}`);
-    return new Response('skipped: ' + decision.reason, { status: 200 });
-  }
-
-  console.log(`[scrape] start — ${decision.reason}`);
-  const snapshot = await buildSnapshot();
-
-  const store = getStore('data');
-  await store.setJSON('snapshot.json', snapshot);
-  await store.setJSON('meta.json', {
-    fetchedAt: snapshot.fetchedAt,
-    finishedAt: snapshot.finishedAt,
-    status: snapshot.status,
-    errors: snapshot.errors,
-  });
-
-  console.log(`[scrape] done status=${snapshot.status} errors=${snapshot.errors.length}`);
-  return new Response('ok', { status: 200 });
+export const config = {
+  schedule: '*/15 4-21 * * *',
 };
 
-// Cron alle 15 Min, ganzjährig. Die eigentliche Filterung passiert in der Function.
-export const config = {
-  schedule: '*/15 * * * *',
+// Hochfrequenter Scrape-Schedule: Vortag des Turniers (für Spielplan-
+// Last-Minute-Änderungen) + die drei eigentlichen Turniertage.
+const TOURNAMENT_DAYS_UTC = new Set([
+  '2026-05-22', // Freitag (Setup / Last-Minute-Anpassungen)
+  '2026-05-23', // Samstag
+  '2026-05-24', // Sonntag
+  '2026-05-25', // Pfingstmontag
+]);
+
+function shouldScrapeNow(now = new Date()) {
+  const ymd = now.toISOString().slice(0, 10);
+  const isTournament = TOURNAMENT_DAYS_UTC.has(ymd);
+
+  if (isTournament) return { ok: true, reason: 'tournament-day' };
+
+  // Außerhalb der Turniertage: nur 1× pro Tag (erster Run um 04:00 UTC = 06:00 Berlin).
+  if (now.getUTCHours() === 4 && now.getUTCMinutes() < 15) {
+    return { ok: true, reason: 'daily-first-run' };
+  }
+  return { ok: false, reason: 'skipped-non-tournament' };
+}
+
+export default async (req, ctx) => {
+  // Diese Function läuft ausschließlich nach Cron-Schedule.
+  // Für manuelles Triggern siehe /netlify/functions/force-scrape.mjs.
+  const decision = shouldScrapeNow();
+  if (!decision.ok) {
+    console.log(`[scrape] skipping: ${decision.reason}`);
+    return new Response(JSON.stringify({ skipped: true, reason: decision.reason }), {
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  console.log(`[scrape] running: ${decision.reason}`);
+  const t0 = Date.now();
+
+  try {
+    const snapshot = await buildSnapshot();
+    const store = getStore('dc2026');
+    await store.setJSON('snapshot.json', snapshot);
+    const dur = Date.now() - t0;
+    console.log(`[scrape] success in ${dur}ms · matches=${snapshot.matches.length} · teams=${snapshot.teams.length}`);
+    return new Response(JSON.stringify({ ok: true, durationMs: dur, matches: snapshot.matches.length }), {
+      headers: { 'content-type': 'application/json' },
+    });
+  } catch (e) {
+    console.error(`[scrape] failed:`, e);
+    return new Response(JSON.stringify({ ok: false, error: e?.message ?? String(e) }), {
+      status: 500,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
 };

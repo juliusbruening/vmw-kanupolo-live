@@ -1,129 +1,65 @@
-// Orchestrator: holt alle Quellseiten PARALLEL, parst sie, liefert ein Snapshot.
-// Wichtig: Alle 6 HTTP-Requests laufen gleichzeitig, damit selbst bei 25s
-// pro Request das 30s-Limit der Netlify Scheduled Function eingehalten wird.
+// scraper/index.mjs
+// Orchestrator: lädt alle 3 Spieltage + 5 VMW-Team-Detailseiten,
+// reduziert auf VMW-relevantes Datenmodell und liefert ein "snapshot"-Objekt.
 
 import { fetchHtml } from './fetch.mjs';
-import { parseSpielplan } from './parseSpielplan.mjs';
-import { parseTabelle } from './parseTabelle.mjs';
-import { parseKader } from './parseKader.mjs';
+import { parseMatchList } from './parseMatchList.mjs';
+import { parseTeam } from './parseTeam.mjs';
 
-const BASE = 'https://bundesliga.kanupolo.de';
-const PROJECT_ID = '115';
-const SEASON_SLUG = '115-herren-1-liga-regulaere-saison-2026';
-const SEASON_PATH = '1-bundesliga-herren';
-const ROUND_IDS = [295, 296, 297, 298];
-const VMW_TEAM_ID = '56';
-const VMW_TEAM_SLUG = 'vereinigung-maerkischer-wanderpaddler-berlin';
-const VMW_TEAM_NAME = 'Vereinigung Märkischer Wanderpaddler Berlin';
-const VMW_NAME_FRAGMENT = 'Märkischer Wanderpaddler';
+const TOURNAMENT_ID = '5500048e-ff41-4b86-9e9b-810043be6461';
+const BASE = 'https://cpt.kayakers.nl';
 
-const TABELLE_URL = `${BASE}/index.php/${SEASON_PATH}/tabelle`;
-const VMW_KADER_URL = `${BASE}/index.php/${SEASON_PATH}/tabelle/roster/${SEASON_SLUG}/${VMW_TEAM_ID}-${VMW_TEAM_SLUG}/0`;
-const SPIELPLAN_URLS = ROUND_IDS.map((rid) => ({
-  rid,
-  url: `${BASE}/index.php/${SEASON_PATH}/spielplan/results/${PROJECT_ID}/${rid}/0/0/0/0`,
-}));
+// VMW-Teams am DC2026 — die `tid`-Werte stammen aus dem ersten Scrape.
+// Falls sich ein Wert ändert (selten), kann er hier angepasst werden.
+export const VMW_TEAMS = [
+  { code: 'U14',   pillLabel: 'U14',     short: 'VMW U14',     name: 'VMW Berlin U14',   tid: 'ce8c0949-ee6d-4526-ad31-9486d8e86f18' },
+  { code: 'U16',   pillLabel: 'U16',     short: 'VMW U16',     name: 'VMW Berlin U16',   tid: '0948547e-1c67-4492-93bc-618c90442b50' },
+  { code: 'U21',   pillLabel: 'U21',     short: 'VMW U21',     name: 'VMW Berlin U21',   tid: 'ecc239cd-2306-41b9-a659-432e7ed1647a' },
+  { code: 'Women', pillLabel: 'Damen',   short: 'VMW Damen',   name: 'VMW Berlin Women', tid: '6775d440-1ea0-47ba-8752-7db49f61f988' },
+  { code: 'Men2',  pillLabel: 'Herren',  short: 'VMW Herren',  name: 'VMW Berlin Men2',  tid: '7b63cb1c-a63b-4c9e-a896-18f0eddcadbe' },
+];
 
-function absolutize(url) {
-  if (!url) return null;
-  if (url.startsWith('http')) return url;
-  if (url.startsWith('/')) return BASE + url;
-  return BASE + '/' + url.replace(/^\.?\//, '');
+function matchListUrl(day) { return `${BASE}/MatchList/DC2026?day=${day}`; }
+function teamUrl(tid)      { return `${BASE}/Team?id=${TOURNAMENT_ID}&tid=${tid}`; }
+
+function vmwCodeForName(name) {
+  if (!/VMW Berlin/i.test(name || '')) return null;
+  if (/U14/.test(name))   return 'U14';
+  if (/U16/.test(name))   return 'U16';
+  if (/U21/.test(name))   return 'U21';
+  if (/Women/.test(name)) return 'Women';
+  if (/Men2/.test(name) || /Men 2/.test(name)) return 'Men2';
+  return null;
 }
 
-function fixupSpielplanLogos(spielplan) {
-  for (const sec of spielplan.sections) {
-    for (const m of sec.matches) {
-      m.home.logo = absolutize(m.home.logo);
-      m.away.logo = absolutize(m.away.logo);
-    }
-  }
-  return spielplan;
-}
+/**
+ * Holt alle Daten, parsed sie und liefert ein konsolidiertes Snapshot.
+ * Optional `fetcher` injectable for testing.
+ */
+export async function buildSnapshot({ fetcher = fetchHtml } = {}) {
+  // 1) Spielpläne aller 3 Tage parallel
+  const dayHtmlList = await Promise.all([1, 2, 3].map(d => fetcher(matchListUrl(d))));
+  const allMatchesRaw = dayHtmlList.flatMap((html, idx) => parseMatchList(html, idx + 1));
 
-function fixupTabelleLogos(tabelle) {
-  for (const r of tabelle.rows) r.logo = absolutize(r.logo);
-  return tabelle;
-}
+  // 2) Team-Detailseiten aller 5 VMW-Teams parallel
+  const teamHtmlList = await Promise.all(VMW_TEAMS.map(t => fetcher(teamUrl(t.tid))));
+  const teams = teamHtmlList.map((html, idx) => {
+    const t = VMW_TEAMS[idx];
+    const parsed = parseTeam(html, { teamCode: t.code, teamName: t.name });
+    return { ...t, roster: parsed.roster, groupTable: parsed.groupTable };
+  });
 
-export async function buildSnapshot({ logger = console } = {}) {
-  const startedAt = new Date().toISOString();
-  const errors = [];
-  const safe = async (label, fn) => {
-    try { return await fn(); }
-    catch (err) {
-      errors.push({ step: label, message: String(err?.message || err) });
-      logger.warn(`! ${label} failed:`, err.message);
-      return null;
-    }
-  };
-
-  // ALLE Requests parallel — das ist der Schlüssel für die 30s-Grenze
-  const tasks = [
-    ...SPIELPLAN_URLS.map(({ rid, url }, i) =>
-      safe(`spielplan ST${i + 1}`, async () => {
-        const html = await fetchHtml(url);
-        return fixupSpielplanLogos(parseSpielplan(html));
-      })
-    ),
-    safe('tabelle', async () => {
-      const html = await fetchHtml(TABELLE_URL);
-      return fixupTabelleLogos(parseTabelle(html));
-    }),
-    safe('kader VMW', async () => {
-      const html = await fetchHtml(VMW_KADER_URL);
-      return parseKader(html);
-    }),
-  ];
-
-  const results = await Promise.all(tasks);
-  const spielplaene = results.slice(0, 4).filter(Boolean);
-  const tabelle = results[4];
-  const kaderVmw = results[5];
-
-  // Team-Liste aus Spielplänen ableiten
-  const teamMap = new Map();
-  for (const sp of spielplaene) {
-    for (const t of (sp.teams || [])) {
-      if (!teamMap.has(t.id)) teamMap.set(t.id, t);
-    }
-  }
-  const teams = Array.from(teamMap.values());
-
-  // Kader-Map
-  const kader = {};
-  if (kaderVmw) kader[VMW_TEAM_ID] = kaderVmw;
-
-  // VMW-Spotlight
-  const vmwMatches = [];
-  for (const sp of spielplaene) {
-    for (const sec of sp.sections) {
-      for (const m of sec.matches) {
-        if (m.home.name?.includes(VMW_NAME_FRAGMENT) ||
-            m.away.name?.includes(VMW_NAME_FRAGMENT)) {
-          vmwMatches.push({
-            spieltag: sp.spieltag,
-            spieltagNr: sp.spieltagNr,
-            sectionHeader: sec.header,
-            ...m,
-            isHome: m.home.name?.includes(VMW_NAME_FRAGMENT),
-          });
-        }
-      }
-    }
-  }
+  // 3) Matches anreichern: vmwTeam (wir spielen), juryVmw (wir pfeifen)
+  const matches = allMatchesRaw.map(m => {
+    const vmwTeam = vmwCodeForName(m.teamA.name) || vmwCodeForName(m.teamB.name);
+    const juryVmw = m.jury ? vmwCodeForName(m.jury.name) : null;
+    return { ...m, vmwTeam, juryVmw };
+  });
 
   return {
-    fetchedAt: startedAt,
-    finishedAt: new Date().toISOString(),
-    source: BASE,
-    season: { projectId: PROJECT_ID, label: 'Saison 2026 — 1. Bundesliga Herren' },
+    lastUpdated: new Date().toISOString(),
+    tournamentId: TOURNAMENT_ID,
+    matches,
     teams,
-    spielplaene,
-    tabelle,
-    kader,
-    vmw: { teamName: VMW_TEAM_NAME, matches: vmwMatches },
-    errors,
-    status: errors.length === 0 ? 'ok' : (spielplaene.length === 0 ? 'failed' : 'partial'),
   };
 }
