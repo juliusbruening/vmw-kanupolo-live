@@ -1,21 +1,18 @@
 {
-  "name": "vmw-dc2026-live",
-  "version": "1.0.0",
-  "description": "Live-Companion für den Deutschland Cup 2026 (Kanupolo) — VMW Berlin",
+  "name": "vmw-kanupolo-live",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": ">=20"
-  },
   "scripts": {
-    "test:parse":      "node scripts/runLocal.mjs",
-    "preview:data":    "node scripts/buildLocalSnapshot.mjs",
-    "preview":         "node scripts/serveLocal.mjs",
-    "scrape:once":     "node scripts/scrapeOnce.mjs",
-    "start:local":     "npm run scrape:once && npm run preview"
+    "test:parse": "node scripts/runLocal.mjs",
+    "preview:data": "node scripts/buildLocalSnapshot.mjs",
+    "preview": "npm run preview:data && node scripts/serveLocal.mjs"
   },
   "dependencies": {
-    "@netlify/blobs": "^8.1.0",
-    "cheerio":        "^1.0.0"
+    "cheerio": "^1.2.0"
+  },
+  "devDependencies": {
+    "@netlify/blobs": "^7.4.0",
+    "@netlify/functions": "^2.8.0"
   }
 }
